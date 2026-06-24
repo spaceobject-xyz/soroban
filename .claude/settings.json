@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "stellar-dev@stellar-dev": true,
+    "openzeppelin-skills@openzeppelin-skills": true
+  }
+}
