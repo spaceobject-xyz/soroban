@@ -106,7 +106,7 @@ pub struct Order {
 /// Emitted when a taker opens a new escrowed order.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Created {
+pub struct OrderCreated {
     #[topic]
     pub order_id: BytesN<32>,
     #[topic]
@@ -165,7 +165,7 @@ impl SpaceObject {
     /// Escrows a taker's source-chain funds and opens a new cross-chain order.
     ///
     /// Pulls `amount_in` of `token_in` from `taker` into the contract, persists
-    /// the resulting [`Order`] as [`OrderStatus::Open`], and emits `Created`.
+    /// the resulting [`Order`] as [`OrderStatus::Open`], and emits `OrderCreated`.
     /// Requires the taker's authorization. Returns the order's content id
     /// (`keccak256` of its terms — see [`order_id`]). `nonce` makes otherwise
     /// identical orders unique; reusing one for the same terms is rejected.
@@ -218,7 +218,9 @@ impl SpaceObject {
             &order.amount_in,
         );
 
-        e.storage().persistent().set(&DataKey::Order(id.clone()), &order);
+        e.storage()
+            .persistent()
+            .set(&DataKey::Order(id.clone()), &order);
         e.storage().persistent().extend_ttl(
             &DataKey::Order(id.clone()),
             ORDER_TTL_THRESHOLD,
@@ -228,7 +230,7 @@ impl SpaceObject {
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
 
-        Created {
+        OrderCreated {
             order_id: id.clone(),
             taker: order.taker,
             token_in: order.token_in,
