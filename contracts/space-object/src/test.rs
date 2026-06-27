@@ -114,7 +114,10 @@ fn create_order_escrows_funds() {
 
     // The order is persisted under that id as Open with the supplied terms.
     let stored: Order = e.as_contract(&client.address, || {
-        e.storage().persistent().get(&DataKey::Order(id.clone())).unwrap()
+        e.storage()
+            .persistent()
+            .get(&DataKey::Order(id.clone()))
+            .unwrap()
     });
     assert_eq!(stored, expected);
 }
