@@ -41,7 +41,12 @@ fn setup(e: &Env) -> (SpaceObjectClient<'static>, Address, Address, Address) {
         zk_oracle: zk_oracle.clone(),
     };
     let id = e.register(SpaceObject, (owner.clone(), config));
-    (SpaceObjectClient::new(e, &id), zk_oracle, owner, fee_collector)
+    (
+        SpaceObjectClient::new(e, &id),
+        zk_oracle,
+        owner,
+        fee_collector,
+    )
 }
 
 /// Deploys a Stellar Asset Contract and mints `amount` to `to`.
@@ -299,7 +304,7 @@ fn open_order(
         order_id: id.clone(),
         solver: BytesN::from_array(e, &[3u8; 32]),
         repayment_address: repayment.clone(),
-        origin_chain: 1,
+        origin_chain: STELLAR_CHAIN_ID,
         filled_at: 123,
     };
     (id, token_in, receipt)
@@ -363,9 +368,24 @@ fn claim_unknown_order_reverts() {
         order_id: BytesN::from_array(&e, &[1u8; 32]),
         solver: BytesN::from_array(&e, &[3u8; 32]),
         repayment_address: Address::generate(&e),
-        origin_chain: 1,
+        origin_chain: STELLAR_CHAIN_ID,
         filled_at: 123,
     };
+    client.claim(&receipt);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn claim_rejects_wrong_origin_chain() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _oracle, _owner, _fc) = setup(&e);
+
+    let repayment = Address::generate(&e);
+    let (_id, _token_in, mut receipt) = open_order(&e, &client, 600, 10, &repayment);
+
+    // A fill that names a different origin chain -> OriginChainMismatch (error #9).
+    receipt.origin_chain = STELLAR_CHAIN_ID + 1;
     client.claim(&receipt);
 }
 

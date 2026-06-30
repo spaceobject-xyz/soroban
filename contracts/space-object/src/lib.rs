@@ -21,6 +21,11 @@ use stellar_macros::{only_owner, when_not_paused};
 /// Upper bound for the protocol fee, in basis points (100% = 10_000 bps).
 const MAX_FEE_BPS: u32 = 10_000;
 
+/// This chain's origin id for cross-chain receipts. Soroban has no native
+/// EVM-style chain id, so the bridge assigns this synthetic value; a
+/// destination-chain fill must carry it as `origin_chain` to be claimable here.
+const STELLAR_CHAIN_ID: u64 = 9_990_001;
+
 /// Ledgers per day at the ~5s close rate, for storage TTL bookkeeping.
 const DAY_IN_LEDGERS: u32 = 17_280;
 /// How far to bump instance storage (config) on each write.
@@ -50,6 +55,8 @@ pub enum Error {
     OrderExists = 7,
     /// The ZK oracle has no proof recorded for this fill on the destination chain.
     FillNotProven = 8,
+    /// The fill's `origin_chain` is not this chain's [`STELLAR_CHAIN_ID`].
+    OriginChainMismatch = 9,
 }
 
 /// Lifecycle of an escrowed order on the source chain.
@@ -144,8 +151,9 @@ pub struct FillReceipt {
     pub solver: BytesN<32>,
     /// This-chain account the escrow is released to (the solver's repayment).
     pub repayment_address: Address,
-    /// Origin (this) chain id recorded at fill time on the destination chain.
-    pub origin_chain: u32,
+    /// Origin chain id recorded at fill time on the destination chain; must
+    /// equal this chain's [`STELLAR_CHAIN_ID`] for the fill to be claimable here.
+    pub origin_chain: u64,
     /// Destination-chain ledger time the fill was recorded.
     pub filled_at: u64,
 }
@@ -319,6 +327,11 @@ impl SpaceObject {
     pub fn claim(e: &Env, fill_receipt: FillReceipt) {
         let order_id = fill_receipt.order_id.clone();
 
+        // The fill must name this chain as its origin (repayment) chain.
+        if fill_receipt.origin_chain != STELLAR_CHAIN_ID {
+            panic_with_error!(e, Error::OriginChainMismatch);
+        }
+
         // The order must exist and still be awaiting a fill.
         let mut order: Order = e
             .storage()
@@ -441,7 +454,7 @@ fn order_id(e: &Env, o: &Order) -> BytesN<32> {
 /// `payload_hash` of a [`FillReceipt`]: `keccak256` over a fixed-layout preimage.
 ///
 /// The preimage is the concatenation, in order, of:
-/// `order_id:32 ‖ solver:32 ‖ repayment_address.xdr ‖ origin_chain:be4 ‖
+/// `order_id:32 ‖ solver:32 ‖ repayment_address.xdr ‖ origin_chain:be8 ‖
 /// filled_at:be8`. This is the value the ZK oracle proves as its second public
 /// signal, so the prover/circuit must build the identical preimage byte-for-byte.
 fn fill_receipt_hash(e: &Env, r: &FillReceipt) -> BytesN<32> {
