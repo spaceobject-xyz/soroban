@@ -50,8 +50,6 @@ pub enum Error {
     OrderExists = 7,
     /// The ZK oracle has no proof recorded for this fill on the destination chain.
     FillNotProven = 8,
-    /// The `fill_receipt` does not reference the order being claimed.
-    FillReceiptMismatch = 9,
 }
 
 /// Lifecycle of an escrowed order on the source chain.
@@ -305,22 +303,21 @@ impl SpaceObject {
 
     /// Releases an order's escrow once its destination-chain fill has been proven.
     ///
-    /// Looks up the `Open` order for `order_id`, hashes `fill_receipt` to the
-    /// `payload_hash` the ZK oracle proves (see [`fill_receipt_hash`]), and asks
-    /// the configured [`ZkOracle`](ZkOracleInterface) whether
-    /// `(order.dest_chain, payload_hash)` has been proven. On `true` it takes the
-    /// protocol fee, sends the remainder to `fill_receipt.repayment_address`,
-    /// marks the order [`OrderStatus::Claimed`], and emits [`OrderClaimed`].
+    /// Looks up the `Open` order named by `fill_receipt.order_id`, hashes
+    /// `fill_receipt` to the `payload_hash` the ZK oracle proves (see
+    /// [`fill_receipt_hash`]), and asks the configured
+    /// [`ZkOracle`](ZkOracleInterface) whether `(order.dest_chain, payload_hash)`
+    /// has been proven. On `true` it takes the protocol fee, sends the remainder
+    /// to `fill_receipt.repayment_address`, marks the order
+    /// [`OrderStatus::Claimed`], and emits [`OrderClaimed`].
     ///
-    /// Permissionless: the proof is the authorization, and the payout target is
-    /// fixed by the proven `payload_hash`, so the caller cannot redirect funds.
+    /// Permissionless: the proof is the authorization, and both the order and the
+    /// payout target are fixed by the proven `payload_hash` (the receipt's
+    /// `order_id` is part of the preimage), so the caller cannot redirect funds.
     /// The `Open` → `Claimed` transition makes it single-use (replay protection).
     #[when_not_paused]
-    pub fn claim(e: &Env, order_id: BytesN<32>, fill_receipt: FillReceipt) {
-        // The receipt must be for the order being claimed.
-        if fill_receipt.order_id != order_id {
-            panic_with_error!(e, Error::FillReceiptMismatch);
-        }
+    pub fn claim(e: &Env, fill_receipt: FillReceipt) {
+        let order_id = fill_receipt.order_id.clone();
 
         // The order must exist and still be awaiting a fill.
         let mut order: Order = e

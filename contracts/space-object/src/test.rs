@@ -320,7 +320,7 @@ fn claim_releases_escrow_when_proven() {
     let payload_hash = fill_receipt_hash(&e, &receipt);
     MockZkOracleClient::new(&e, &oracle).set_proven(&dest_chain, &payload_hash);
 
-    client.claim(&id, &receipt);
+    client.claim(&receipt);
 
     // Fee = 600 * 30 / 10_000 = 1; the rest goes to the repayment address.
     assert_eq!(token.balance(&fee_collector), 1);
@@ -345,25 +345,28 @@ fn claim_without_proof_reverts() {
     let (client, _oracle, _owner, _fc) = setup(&e);
 
     let repayment = Address::generate(&e);
-    let (id, _token_in, receipt) = open_order(&e, &client, 600, 10, &repayment);
+    let (_id, _token_in, receipt) = open_order(&e, &client, 600, 10, &repayment);
 
     // No proof was recorded -> FillNotProven (error #8).
-    client.claim(&id, &receipt);
+    client.claim(&receipt);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #9)")]
-fn claim_rejects_receipt_for_other_order() {
+#[should_panic(expected = "Error(Contract, #3)")]
+fn claim_unknown_order_reverts() {
     let e = Env::default();
     e.mock_all_auths();
     let (client, _oracle, _owner, _fc) = setup(&e);
 
-    let repayment = Address::generate(&e);
-    let (id, _token_in, mut receipt) = open_order(&e, &client, 600, 10, &repayment);
-
-    // Point the receipt at a different order id -> FillReceiptMismatch (error #9).
-    receipt.order_id = BytesN::from_array(&e, &[1u8; 32]);
-    client.claim(&id, &receipt);
+    // A receipt whose order_id was never opened -> OrderNotFound (error #3).
+    let receipt = FillReceipt {
+        order_id: BytesN::from_array(&e, &[1u8; 32]),
+        solver: BytesN::from_array(&e, &[3u8; 32]),
+        repayment_address: Address::generate(&e),
+        origin_chain: 1,
+        filled_at: 123,
+    };
+    client.claim(&receipt);
 }
 
 #[test]
@@ -375,12 +378,12 @@ fn claim_twice_reverts() {
 
     let repayment = Address::generate(&e);
     let dest_chain = 10u64;
-    let (id, _token_in, receipt) = open_order(&e, &client, 600, dest_chain, &repayment);
+    let (_id, _token_in, receipt) = open_order(&e, &client, 600, dest_chain, &repayment);
 
     let payload_hash = fill_receipt_hash(&e, &receipt);
     MockZkOracleClient::new(&e, &oracle).set_proven(&dest_chain, &payload_hash);
 
-    client.claim(&id, &receipt);
+    client.claim(&receipt);
     // Order is no longer Open -> OrderInactive (error #4).
-    client.claim(&id, &receipt);
+    client.claim(&receipt);
 }
