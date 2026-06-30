@@ -90,7 +90,7 @@ fn create_order_escrows_funds() {
     let deadline = e.ledger().timestamp() + 3_600;
 
     let id = client.create_order(
-        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u32, &deadline, &1u64,
+        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u64, &deadline, &1u64,
     );
 
     // Funds moved from the taker into the escrow.
@@ -135,10 +135,10 @@ fn distinct_nonce_yields_distinct_id() {
     let deadline = e.ledger().timestamp() + 3_600;
 
     let id1 = client.create_order(
-        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u32, &deadline, &1u64,
+        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u64, &deadline, &1u64,
     );
     let id2 = client.create_order(
-        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u32, &deadline, &2u64,
+        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u64, &deadline, &2u64,
     );
 
     assert_ne!(id1, id2);
@@ -159,10 +159,10 @@ fn duplicate_order_rejected() {
 
     // Identical terms + nonce hash to the same id -> the second call is rejected.
     client.create_order(
-        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u32, &deadline, &1u64,
+        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u64, &deadline, &1u64,
     );
     client.create_order(
-        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u32, &deadline, &1u64,
+        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u64, &deadline, &1u64,
     );
 }
 
@@ -185,7 +185,7 @@ fn create_order_rejects_zero_amount() {
         &token_out,
         &590i128,
         &recipient,
-        &10u32,
+        &10u64,
         &(e.ledger().timestamp() + 3_600),
         &1u64,
     );
@@ -205,7 +205,7 @@ fn create_order_rejects_past_deadline() {
 
     e.ledger().set_timestamp(1_000);
     client.create_order(
-        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u32, &500u64, &1u64,
+        &taker, &token_in, &600i128, &token_out, &590i128, &recipient, &10u64, &500u64, &1u64,
     );
 }
 
@@ -231,7 +231,7 @@ fn create_order_blocked_when_paused() {
         &token_out,
         &590i128,
         &recipient,
-        &10u32,
+        &10u64,
         &(e.ledger().timestamp() + 3_600),
         &1u64,
     );

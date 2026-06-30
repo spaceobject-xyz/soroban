@@ -95,7 +95,7 @@ pub struct Order {
     /// Recipient on the destination chain, in raw 32-byte form.
     pub recipient: BytesN<32>,
     /// Destination chain identifier.
-    pub dest_chain: u32,
+    pub dest_chain: u64,
     /// Ledger timestamp after which the taker may refund the escrow.
     pub deadline: u64,
     /// Caller-supplied salt that makes otherwise-identical orders unique.
@@ -116,7 +116,7 @@ pub struct OrderCreated {
     pub token_out: BytesN<32>,
     pub amount_out: i128,
     pub recipient: BytesN<32>,
-    pub dest_chain: u32,
+    pub dest_chain: u64,
     pub deadline: u64,
     pub nonce: u64,
 }
@@ -178,7 +178,7 @@ impl SpaceObject {
         token_out: BytesN<32>,
         amount_out: i128,
         recipient: BytesN<32>,
-        dest_chain: u32,
+        dest_chain: u64,
         deadline: u64,
         nonce: u64,
     ) -> BytesN<32> {
@@ -247,15 +247,15 @@ impl SpaceObject {
         id
     }
 
-    /// Releases an order's escrow to the `maker` that filled it on the
+    /// Releases an order's escrow to the `fill_receipt.repayment_address` that filled it on the
     /// destination chain.
     ///
-    /// TODO: verify `fill_proof` against the order, take the protocol fee,
-    /// transfer the remainder to `maker`, mark the order [`OrderStatus::Claimed`],
+    /// TODO: verify `fill_receipt` against the order, take the protocol fee,
+    /// transfer the remainder to `fill_receipt.repayment_address`, mark the order [`OrderStatus::Claimed`],
     /// and emit `Claimed`.
     #[when_not_paused]
-    pub fn claim(e: &Env, order_id: BytesN<32>, maker: Address, fill_proof: Bytes) {
-        let _ = (order_id, maker, fill_proof);
+    pub fn claim(e: &Env, order_id: BytesN<32>, fill_receipt: Bytes) {
+        let _ = (order_id, fill_receipt);
         unimplemented!()
     }
 }
@@ -298,7 +298,7 @@ fn require_owner(e: &Env, caller: &Address) {
 ///
 /// The preimage is the concatenation, in order, of:
 /// `taker.xdr ‖ token_in.xdr ‖ amount_in:be16 ‖ token_out:32 ‖
-/// amount_out:be16 ‖ recipient:32 ‖ dest_chain:be4 ‖ deadline:be8 ‖ nonce:be8`.
+/// amount_out:be16 ‖ recipient:32 ‖ dest_chain:be8 ‖ deadline:be8 ‖ nonce:be8`.
 /// keccak256 is chosen so an EVM destination chain can recompute the same id
 /// from the identical preimage bytes. This layout is a cross-chain commitment:
 /// the counterpart contract must mirror it byte-for-byte.
