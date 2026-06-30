@@ -11,8 +11,8 @@
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, BytesN, Env,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
+    panic_with_error, Address, Bytes, BytesN, Env,
 };
 use stellar_access::ownable::{get_owner, set_owner, Ownable};
 use stellar_contract_utils::pausable::{self as pausable, Pausable};
@@ -48,6 +48,10 @@ pub enum Error {
     InvalidDeadline = 6,
     /// An order with this content id already exists (duplicate/replay).
     OrderExists = 7,
+    /// The ZK oracle has no proof recorded for this fill on the destination chain.
+    FillNotProven = 8,
+    /// The `fill_receipt` does not reference the order being claimed.
+    FillReceiptMismatch = 9,
 }
 
 /// Lifecycle of an escrowed order on the source chain.
@@ -70,6 +74,9 @@ pub struct ProtocolConfig {
     pub fee_bps: u32,
     /// Account that accrues protocol fees.
     pub fee_collector: Address,
+    /// [`ZkOracle`](ZkOracleInterface) consulted by [`SpaceObject::claim`] to
+    /// confirm a fill was proven on the destination chain.
+    pub zk_oracle: Address,
 }
 
 /// A cross-chain swap intent whose source-chain funds are escrowed here.
@@ -119,6 +126,55 @@ pub struct OrderCreated {
     pub dest_chain: u64,
     pub deadline: u64,
     pub nonce: u64,
+}
+
+/// A destination-chain fill, as attested by the ZK oracle.
+///
+/// Mirrors the destination contract's `FillReceipt` (see the EVM `SpaceObject`),
+/// plus the `order_id` it settles so the proof is bound to a specific order.
+/// `claim` releases this chain's escrow to `repayment_address`, which is a
+/// *this-chain* account (the origin chain is where the solver is repaid). The
+/// keccak256 of its fixed-layout encoding (see [`fill_receipt_hash`]) is the
+/// `payload_hash` the oracle proves; that layout is a cross-chain commitment the
+/// prover/circuit must mirror byte-for-byte.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FillReceipt {
+    /// Content id of the order this fill settles (binds the proof to the order).
+    pub order_id: BytesN<32>,
+    /// Destination-chain solver address, in raw 32-byte form.
+    pub solver: BytesN<32>,
+    /// This-chain account the escrow is released to (the solver's repayment).
+    pub repayment_address: Address,
+    /// Origin (this) chain id recorded at fill time on the destination chain.
+    pub origin_chain: u32,
+    /// Destination-chain ledger time the fill was recorded.
+    pub filled_at: u64,
+}
+
+/// Emitted when a maker releases an order's escrow after proving the fill.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderClaimed {
+    #[topic]
+    pub order_id: BytesN<32>,
+    #[topic]
+    pub repayment_address: Address,
+    pub token_in: Address,
+    /// Amount released to `repayment_address` (escrow minus `fee`).
+    pub amount: i128,
+    /// Protocol fee taken from the escrow and sent to the fee collector.
+    pub fee: i128,
+}
+
+/// The subset of the [`ZkOracle`](../zk_oracle) interface `claim` depends on.
+///
+/// Declaring the interface here generates a [`ZkOracleClient`] for the
+/// cross-contract call without importing the oracle's WASM.
+#[contractclient(name = "ZkOracleClient")]
+pub trait ZkOracleInterface {
+    /// Whether a proof has been recorded for `(chain_id, payload_hash)`.
+    fn is_proven(e: Env, chain_id: u64, payload_hash: BytesN<32>) -> bool;
 }
 
 #[contracttype]
@@ -247,16 +303,85 @@ impl SpaceObject {
         id
     }
 
-    /// Releases an order's escrow to the `fill_receipt.repayment_address` that filled it on the
-    /// destination chain.
+    /// Releases an order's escrow once its destination-chain fill has been proven.
     ///
-    /// TODO: verify `fill_receipt` against the order, take the protocol fee,
-    /// transfer the remainder to `fill_receipt.repayment_address`, mark the order [`OrderStatus::Claimed`],
-    /// and emit `Claimed`.
+    /// Looks up the `Open` order for `order_id`, hashes `fill_receipt` to the
+    /// `payload_hash` the ZK oracle proves (see [`fill_receipt_hash`]), and asks
+    /// the configured [`ZkOracle`](ZkOracleInterface) whether
+    /// `(order.dest_chain, payload_hash)` has been proven. On `true` it takes the
+    /// protocol fee, sends the remainder to `fill_receipt.repayment_address`,
+    /// marks the order [`OrderStatus::Claimed`], and emits [`OrderClaimed`].
+    ///
+    /// Permissionless: the proof is the authorization, and the payout target is
+    /// fixed by the proven `payload_hash`, so the caller cannot redirect funds.
+    /// The `Open` → `Claimed` transition makes it single-use (replay protection).
     #[when_not_paused]
-    pub fn claim(e: &Env, order_id: BytesN<32>, fill_receipt: Bytes) {
-        let _ = (order_id, fill_receipt);
-        unimplemented!()
+    pub fn claim(e: &Env, order_id: BytesN<32>, fill_receipt: FillReceipt) {
+        // The receipt must be for the order being claimed.
+        if fill_receipt.order_id != order_id {
+            panic_with_error!(e, Error::FillReceiptMismatch);
+        }
+
+        // The order must exist and still be awaiting a fill.
+        let mut order: Order = e
+            .storage()
+            .persistent()
+            .get(&DataKey::Order(order_id.clone()))
+            .unwrap_or_else(|| panic_with_error!(e, Error::OrderNotFound));
+        if order.status != OrderStatus::Open {
+            panic_with_error!(e, Error::OrderInactive);
+        }
+
+        // The oracle must hold a proof that this exact fill happened on the
+        // order's destination chain.
+        let config = Self::get_config(e);
+        let payload_hash = fill_receipt_hash(e, &fill_receipt);
+        let oracle = ZkOracleClient::new(e, &config.zk_oracle);
+        if !oracle.is_proven(&order.dest_chain, &payload_hash) {
+            panic_with_error!(e, Error::FillNotProven);
+        }
+
+        // Effects: close the order before moving funds (CEI / no double claim).
+        order.status = OrderStatus::Claimed;
+        e.storage()
+            .persistent()
+            .set(&DataKey::Order(order_id.clone()), &order);
+        e.storage().persistent().extend_ttl(
+            &DataKey::Order(order_id.clone()),
+            ORDER_TTL_THRESHOLD,
+            ORDER_TTL_EXTEND,
+        );
+        e.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+
+        // Interactions: split the escrow between the fee collector and the solver.
+        // `amount_in > 0` and `fee_bps <= MAX_FEE_BPS` (both enforced on write),
+        // so `0 <= fee <= amount_in`; the multiply is range-checked for safety.
+        let fee = order
+            .amount_in
+            .checked_mul(config.fee_bps as i128)
+            .expect("fee overflow")
+            / MAX_FEE_BPS as i128;
+        let net = order.amount_in - fee;
+
+        let token = TokenClient::new(e, &order.token_in);
+        let contract = e.current_contract_address();
+        if fee > 0 {
+            token.transfer(&contract, &config.fee_collector, &fee);
+        }
+        if net > 0 {
+            token.transfer(&contract, &fill_receipt.repayment_address, &net);
+        }
+
+        OrderClaimed {
+            order_id,
+            repayment_address: fill_receipt.repayment_address,
+            token_in: order.token_in,
+            amount: net,
+            fee,
+        }
+        .publish(e);
     }
 }
 
@@ -313,6 +438,22 @@ fn order_id(e: &Env, o: &Order) -> BytesN<32> {
     buf.extend_from_array(&o.dest_chain.to_be_bytes());
     buf.extend_from_array(&o.deadline.to_be_bytes());
     buf.extend_from_array(&o.nonce.to_be_bytes());
+    e.crypto().keccak256(&buf).to_bytes()
+}
+
+/// `payload_hash` of a [`FillReceipt`]: `keccak256` over a fixed-layout preimage.
+///
+/// The preimage is the concatenation, in order, of:
+/// `order_id:32 ‖ solver:32 ‖ repayment_address.xdr ‖ origin_chain:be4 ‖
+/// filled_at:be8`. This is the value the ZK oracle proves as its second public
+/// signal, so the prover/circuit must build the identical preimage byte-for-byte.
+fn fill_receipt_hash(e: &Env, r: &FillReceipt) -> BytesN<32> {
+    let mut buf = Bytes::new(e);
+    buf.extend_from_array(&r.order_id.to_array());
+    buf.extend_from_array(&r.solver.to_array());
+    buf.append(&r.repayment_address.clone().to_xdr(e));
+    buf.extend_from_array(&r.origin_chain.to_be_bytes());
+    buf.extend_from_array(&r.filled_at.to_be_bytes());
     e.crypto().keccak256(&buf).to_bytes()
 }
 
