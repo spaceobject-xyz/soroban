@@ -9,7 +9,9 @@ crate-type = ["lib", "cdylib"]
 doctest = false
 
 [dependencies]
-soroban-sdk = { workspace = true }
+# `hazmat-address` exposes `Address::to_payload`, the SDK's cross-chain-interop
+# API for extracting an address's raw 32-byte payload (see `address_bytes`).
+soroban-sdk = { workspace = true, features = ["hazmat-address"] }
 stellar-access = { workspace = true }
 stellar-contract-utils = { workspace = true }
 stellar-macros = { workspace = true }

@@ -8,8 +8,8 @@
 //! emergency stop) and [`Ownable`], and it holds an owner-governed
 //! [`ProtocolConfig`] for protocol fees.
 
+use soroban_sdk::address_payload::AddressPayload;
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
     panic_with_error, Address, Bytes, BytesN, Env,
@@ -432,15 +432,18 @@ fn require_owner(e: &Env, caller: &Address) {
 /// terms (every field except `status`).
 ///
 /// The preimage is the concatenation, in order, of:
-/// `taker.xdr ‖ token_in.xdr ‖ amount_in:be16 ‖ token_out:32 ‖
+/// `taker:32 ‖ token_in:32 ‖ amount_in:be16 ‖ token_out:32 ‖
 /// amount_out:be16 ‖ recipient:32 ‖ dest_chain:be8 ‖ deadline:be8 ‖ nonce:be8`.
-/// keccak256 is chosen so an EVM destination chain can recompute the same id
-/// from the identical preimage bytes. This layout is a cross-chain commitment:
-/// the counterpart contract must mirror it byte-for-byte.
+/// The Stellar `taker`/`token_in` addresses are committed as their raw 32-byte
+/// payloads (see [`address_bytes`]) rather than XDR, so every field is
+/// fixed-width. keccak256 is chosen so an EVM destination chain can recompute
+/// the same id from the identical preimage bytes without parsing Stellar XDR.
+/// This layout is a cross-chain commitment: the counterpart contract must
+/// mirror it byte-for-byte.
 fn order_id(e: &Env, o: &Order) -> BytesN<32> {
     let mut buf = Bytes::new(e);
-    buf.append(&o.taker.clone().to_xdr(e));
-    buf.append(&o.token_in.clone().to_xdr(e));
+    buf.extend_from_array(&address_bytes(&o.taker).to_array());
+    buf.extend_from_array(&address_bytes(&o.token_in).to_array());
     buf.extend_from_array(&o.amount_in.to_be_bytes());
     buf.extend_from_array(&o.token_out.to_array());
     buf.extend_from_array(&o.amount_out.to_be_bytes());
@@ -451,17 +454,39 @@ fn order_id(e: &Env, o: &Order) -> BytesN<32> {
     e.crypto().keccak256(&buf).to_bytes()
 }
 
+/// The raw 32-byte payload of a Stellar [`Address`]: the ed25519 public key for
+/// a `G…` account, or the contract-id hash for a `C…` contract.
+///
+/// Cross-chain order/receipt commitments are hashed over fixed-width fields so
+/// the EVM counterpart and the ZK circuit can mirror the layout without parsing
+/// Stellar's XDR — they only ever see this raw 32-byte form. The account-vs-
+/// contract distinction is intentionally dropped; these bytes are an opaque
+/// cross-chain identifier, never used for signature verification (the taker is
+/// separately `require_auth`'d, and the payout target is fixed by the proven
+/// `payload_hash`).
+fn address_bytes(address: &Address) -> BytesN<32> {
+    match address
+        .to_payload()
+        .expect("address is not an account or contract")
+    {
+        AddressPayload::AccountIdPublicKeyEd25519(bytes)
+        | AddressPayload::ContractIdHash(bytes) => bytes,
+    }
+}
+
 /// `payload_hash` of a [`FillReceipt`]: `keccak256` over a fixed-layout preimage.
 ///
 /// The preimage is the concatenation, in order, of:
-/// `order_id:32 ‖ solver:32 ‖ repayment_address.xdr ‖ origin_chain:be8 ‖
-/// filled_at:be8`. This is the value the ZK oracle proves as its second public
+/// `order_id:32 ‖ solver:32 ‖ repayment_address:32 ‖ origin_chain:be8 ‖
+/// filled_at:be8`. The Stellar `repayment_address` is committed as its raw
+/// 32-byte payload (see [`address_bytes`]) rather than XDR, keeping every field
+/// fixed-width. This is the value the ZK oracle proves as its second public
 /// signal, so the prover/circuit must build the identical preimage byte-for-byte.
 fn fill_receipt_hash(e: &Env, r: &FillReceipt) -> BytesN<32> {
     let mut buf = Bytes::new(e);
     buf.extend_from_array(&r.order_id.to_array());
     buf.extend_from_array(&r.solver.to_array());
-    buf.append(&r.repayment_address.clone().to_xdr(e));
+    buf.extend_from_array(&address_bytes(&r.repayment_address).to_array());
     buf.extend_from_array(&r.origin_chain.to_be_bytes());
     buf.extend_from_array(&r.filled_at.to_be_bytes());
     e.crypto().keccak256(&buf).to_bytes()
